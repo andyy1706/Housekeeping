@@ -13,6 +13,10 @@ const TYPE_C = { bleibe: "#2d7fc1", abreise: "#b03030" };
 const FLOOR_C = ["#7c5cdb","#2d7fc1","#1e9e6e","#c49a00","#c04040","#b040b0"];
 const FLOORS  = [1,2,3,4,5,6];
 
+// How strongly to prefer same floor (in "points").
+// 1.2 = about the weight of a medium room – strong preference, but fairness still wins if imbalance is big.
+const FLOOR_BONUS = 1.2;
+
 const DARK = {
   bg:"#13131a", bgCard:"#1c1c22", bgInner:"#111118", bgDeep:"#0d0d14",
   border:"#2e2e38", border2:"#2a2a35", border3:"#2d2d3a",
@@ -30,6 +34,7 @@ const LIGHT = {
   presentOff:"#f0ede8", avatarOff:"#e8e4de", dark:false,
 };
 
+// ── Distribute: greedy with floor-preference bonus ────────────────────────────
 function distribute(staff, rooms) {
   if (!staff.length || !rooms.length) return { assigned:{}, loads:{}, targets:{}, caps:{} };
   const caps    = Object.fromEntries(staff.map(s => [s.id, staffCap(s)]));
@@ -38,19 +43,34 @@ function distribute(staff, rooms) {
   const targets = Object.fromEntries(staff.map(s => [s.id, (caps[s.id]/totalC)*totalW]));
   const assigned = Object.fromEntries(staff.map(s => [s.id, []]));
   const loads    = Object.fromEntries(staff.map(s => [s.id, 0]));
-  for (const room of [...rooms].sort((a,b) => roomWeight(b)-roomWeight(a))) {
-    let best=null, bestVal=-Infinity;
-    for (const s of staff) { const v=targets[s.id]-loads[s.id]; if(v>bestVal){bestVal=v;best=s;} }
-    assigned[best.id].push(room); loads[best.id]+=roomWeight(room);
+
+  // Sort rooms: first by floor, then heaviest first within each floor
+  const sorted = [...rooms].sort((a,b) =>
+    a.floor !== b.floor ? a.floor - b.floor : roomWeight(b) - roomWeight(a)
+  );
+
+  for (const room of sorted) {
+    let best=null, bestScore=-Infinity;
+    for (const s of staff) {
+      // Base score: how much capacity is still available relative to target
+      const fairScore = targets[s.id] - loads[s.id];
+      // Bonus if this room is on the staff member's preferred floor
+      const floorBonus = s.preferredFloor === room.floor ? FLOOR_BONUS : 0;
+      const score = fairScore + floorBonus;
+      if (score > bestScore) { bestScore = score; best = s; }
+    }
+    assigned[best.id].push(room);
+    loads[best.id] += roomWeight(room);
   }
   return { assigned, loads, targets, caps };
 }
 
+// ── Seed ──────────────────────────────────────────────────────────────────────
 const INIT_STAFF = [
-  { id:uid(), name:"Maria K.",  age:42, hours:8 },
-  { id:uid(), name:"Jana L.",   age:29, hours:8 },
-  { id:uid(), name:"Beate W.",  age:57, hours:6 },
-  { id:uid(), name:"Petra H.",  age:48, hours:8 },
+  { id:uid(), name:"Maria K.",  age:42, hours:8, preferredFloor:1 },
+  { id:uid(), name:"Jana L.",   age:29, hours:8, preferredFloor:2 },
+  { id:uid(), name:"Beate W.",  age:57, hours:6, preferredFloor:3 },
+  { id:uid(), name:"Petra H.",  age:48, hours:8, preferredFloor:4 },
 ];
 function seedRooms() {
   const cfg = {
@@ -68,6 +88,7 @@ function seedRooms() {
 }
 const INIT_ROOMDB = seedRooms();
 
+// ── Primitives ────────────────────────────────────────────────────────────────
 const TI = ({value,onChange,placeholder,type="text",min,max,t}) =>
   <input style={{background:t.inputBg,border:"1px solid "+t.border3,borderRadius:7,color:t.text,padding:"7px 10px",fontSize:13,fontFamily:"inherit",outline:"none",width:"100%",boxSizing:"border-box"}}
     type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} min={min} max={max}/>;
@@ -142,19 +163,24 @@ function EditRow({s,onSave,onCancel,t}) {
   return (
     <div style={{background:t.editBg,border:"1px solid "+t.accent+"55",borderRadius:10,padding:"14px 16px",display:"flex",flexDirection:"column",gap:12}}>
       <div style={{fontSize:11,color:t.accent,fontWeight:700,letterSpacing:.5,textTransform:"uppercase"}}>Bearbeiten</div>
-      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:10}}>
+      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:10}}>
         <Field label="Name" t={t}><TI value={d.name} onChange={f("name")} placeholder="Name" t={t}/></Field>
         <Field label="Alter" t={t}><TI type="number" min={16} max={70} value={d.age} onChange={f("age")} t={t}/></Field>
         <Field label="Stunden" t={t}><TI type="number" min={1} max={12} value={d.hours} onChange={f("hours")} t={t}/></Field>
+        <Field label="Stamm-Etage" t={t}>
+          <Sel value={d.preferredFloor} onChange={v=>setD(p=>({...p,preferredFloor:+v}))} t={t}
+            options={FLOORS.map(f=>({value:f,label:f+". Etage"}))}/>
+        </Field>
       </div>
       <div style={{display:"flex",gap:8}}>
-        <Btn v="green" sm t={t} onClick={()=>onSave({...d,age:+d.age,hours:+d.hours})}>Speichern</Btn>
+        <Btn v="green" sm t={t} onClick={()=>onSave({...d,age:+d.age,hours:+d.hours,preferredFloor:+d.preferredFloor})}>Speichern</Btn>
         <Btn v="ghost" sm t={t} onClick={onCancel}>Abbrechen</Btn>
       </div>
     </div>
   );
 }
 
+// ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
   const [darkMode, setDarkMode] = useState(true);
   const t = darkMode ? DARK : LIGHT;
@@ -164,7 +190,7 @@ export default function App() {
   const [present, setPresent] = useState(()=>Object.fromEntries(INIT_STAFF.map(s=>[s.id,true])));
   const [editId,  setEditId]  = useState(null);
   const [tab,     setTab]     = useState("plan");
-  const [nStaff,  setNStaff]  = useState({name:"",age:30,hours:8});
+  const [nStaff,  setNStaff]  = useState({name:"",age:30,hours:8,preferredFloor:1});
   const [nRoom,   setNRoom]   = useState({floor:1,number:"",size:"M"});
 
   const activeStaff = useMemo(()=>staff.filter(s=>present[s.id]),[staff,present]);
@@ -176,14 +202,27 @@ export default function App() {
     return Math.max(0,Math.round((1-diffs.reduce((a,b)=>a+b,0)/diffs.length)*100));
   },[activeStaff,today,loads,targets]);
 
+  // Floor adherence score: % of rooms assigned on preferred floor
+  const floorScore = useMemo(()=>{
+    if (!activeStaff.length||!today.length) return 100;
+    let onFloor=0, total=0;
+    for (const s of activeStaff) {
+      const sRooms = assigned[s.id]||[];
+      total += sRooms.length;
+      onFloor += sRooms.filter(r=>r.floor===s.preferredFloor).length;
+    }
+    return total>0 ? Math.round((onFloor/total)*100) : 100;
+  },[activeStaff,assigned,today]);
+
   const fColor = fairness>=90?"#3a9e6a":fairness>=70?"#d4820a":"#c03030";
+  const flColor = floorScore>=80?"#3a9e6a":floorScore>=60?"#d4820a":"#c03030";
   const dateStr = new Date().toLocaleDateString("de-DE",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
 
   const addStaff = ()=>{
     if (!nStaff.name.trim()) return;
-    const s={...nStaff,id:uid(),age:+nStaff.age,hours:+nStaff.hours};
+    const s={...nStaff,id:uid(),age:+nStaff.age,hours:+nStaff.hours,preferredFloor:+nStaff.preferredFloor};
     setStaff(p=>[...p,s]); setPresent(p=>({...p,[s.id]:true}));
-    setNStaff({name:"",age:30,hours:8});
+    setNStaff({name:"",age:30,hours:8,preferredFloor:1});
   };
   const removeStaff = id=>{
     setStaff(p=>p.filter(s=>s.id!==id));
@@ -222,9 +261,15 @@ export default function App() {
           <button onClick={()=>setDarkMode(d=>!d)} style={{display:"flex",alignItems:"center",gap:8,background:t.bgInner,border:"1px solid "+t.border,borderRadius:20,padding:"6px 14px",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,color:t.textSub}}>
             <span style={{fontSize:16}}>{darkMode?"☀️":"🌙"}</span>{darkMode?"Hell":"Dunkel"}
           </button>
-          <div style={{textAlign:"right"}}>
-            <div style={{fontSize:11,color:t.textMuted,marginBottom:2}}>Fairness-Score</div>
-            <div style={{fontFamily:"'Playfair Display',serif",fontSize:28,fontWeight:900,color:fColor,lineHeight:1}}>{fairness}%</div>
+          <div style={{display:"flex",gap:16}}>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:10,color:t.textMuted,marginBottom:1}}>Fairness</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:24,fontWeight:900,color:fColor,lineHeight:1}}>{fairness}%</div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:10,color:t.textMuted,marginBottom:1}}>Etagentreue</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:24,fontWeight:900,color:flColor,lineHeight:1}}>{floorScore}%</div>
+            </div>
           </div>
         </div>
       </div>
@@ -254,49 +299,71 @@ export default function App() {
 
       <div style={{padding:"22px 28px",maxWidth:1200,margin:"0 auto"}}>
 
-        {/* PLAN */}
+        {/* ══ PLAN ══════════════════════════════════════════════════════════ */}
         {tab==="plan"&&(
           <div>
             {today.length===0&&<div style={{textAlign:"center",padding:60,color:t.textMuted}}>Noch keine Zimmer ausgewaehlt.<br/><span style={{color:t.accent}}>Tab Tagesplan aufrufen</span></div>}
             {today.length>0&&activeStaff.length===0&&<div style={{textAlign:"center",padding:60,color:t.textMuted}}>Keine Mitarbeiter anwesend.<br/><span style={{color:t.accent}}>Tab Personal aufrufen</span></div>}
             {today.length>0&&activeStaff.length>0&&(
               <>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(290px,1fr))",gap:16}}>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:16}}>
                   {activeStaff.map(s=>{
                     const sRooms=assigned[s.id]||[], load=loads[s.id]||0, target=targets[s.id]||0;
+                    const onFloor=sRooms.filter(r=>r.floor===s.preferredFloor).length;
+                    const offFloor=sRooms.length-onFloor;
+                    const fc = FLOOR_C[s.preferredFloor-1];
                     return (
                       <div key={s.id} style={{background:t.bgCard,border:"1px solid "+t.border,borderRadius:14,overflow:"hidden"}}>
                         <div style={{padding:"14px 18px",background:"linear-gradient(90deg,"+t.accent+"12 0%,transparent 100%)",borderBottom:"1px solid "+t.border}}>
                           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                             <div>
                               <div style={{fontFamily:"'Playfair Display',serif",fontSize:16,fontWeight:700,color:t.text}}>{s.name}</div>
-                              <div style={{fontSize:11,color:t.textSub,marginTop:2}}>{s.age} Jahre - {s.hours}h - x{AGE_FACTOR(s.age).toFixed(2)}</div>
+                              <div style={{fontSize:11,color:t.textSub,marginTop:2,display:"flex",alignItems:"center",gap:6}}>
+                                {s.age} J. - {s.hours}h - x{AGE_FACTOR(s.age).toFixed(2)}
+                                <span style={{background:fc+"22",color:fc,border:"1px solid "+fc+"44",borderRadius:4,padding:"0 5px",fontSize:10,fontWeight:700}}>
+                                  Etage {s.preferredFloor}
+                                </span>
+                              </div>
                             </div>
                             <div style={{textAlign:"right"}}>
                               <div style={{fontSize:24,fontWeight:900,color:t.accent,fontFamily:"'Playfair Display',serif",lineHeight:1}}>{sRooms.length}</div>
                               <div style={{fontSize:10,color:t.textMuted}}>Zimmer</div>
                             </div>
                           </div>
-                          <div style={{marginTop:10}}><FBar load={load} target={target} t={t}/></div>
-                        </div>
-                        <div style={{padding:"12px 16px",display:"flex",flexDirection:"column",gap:6}}>
-                          {sRooms.length===0&&<span style={{color:t.textFaint,fontSize:12}}>Keine Zimmer</span>}
-                          {sRooms.map(r=>(
-                            <div key={r.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:t.bgInner,border:"1px solid "+t.border2,borderRadius:8,padding:"6px 11px"}}>
-                              <div style={{display:"flex",alignItems:"center",gap:7}}>
-                                <span style={{fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:700,color:t.accent}}>{r.number}</span>
-                                <Badge color={FLOOR_C[r.floor-1]}>Etage {r.floor}</Badge>
-                                <Badge color={SIZE_C[r.size]}>{SIZE_L[r.size]}</Badge>
-                                <Badge color={TYPE_C[r.type]}>{r.type==="bleibe"?"Bleibe":"Abreise"}</Badge>
-                              </div>
-                              <span style={{fontSize:10,color:t.textFaint}}>{roomWeight(r).toFixed(1)} Pkt</span>
+                          <div style={{marginTop:8}}><FBar load={load} target={target} t={t}/></div>
+                          {sRooms.length>0&&(
+                            <div style={{marginTop:6,fontSize:10,display:"flex",gap:10}}>
+                              <span style={{color:fc}}>✓ {onFloor} auf Stamm-Etage {s.preferredFloor}</span>
+                              {offFloor>0&&<span style={{color:t.textFaint}}>+ {offFloor} andere Etage{offFloor>1?"n":""}</span>}
                             </div>
-                          ))}
+                          )}
+                        </div>
+                        <div style={{padding:"12px 16px",display:"flex",flexDirection:"column",gap:5}}>
+                          {sRooms.length===0&&<span style={{color:t.textFaint,fontSize:12}}>Keine Zimmer</span>}
+                          {sRooms.map(r=>{
+                            const isHome = r.floor===s.preferredFloor;
+                            return (
+                              <div key={r.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:isHome?FLOOR_C[r.floor-1]+"0d":t.bgInner,border:"1px solid "+(isHome?FLOOR_C[r.floor-1]+"33":t.border2),borderRadius:8,padding:"6px 11px"}}>
+                                <div style={{display:"flex",alignItems:"center",gap:7}}>
+                                  <span style={{fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:700,color:t.accent}}>{r.number}</span>
+                                  <Badge color={FLOOR_C[r.floor-1]}>E{r.floor}</Badge>
+                                  <Badge color={SIZE_C[r.size]}>{SIZE_L[r.size]}</Badge>
+                                  <Badge color={TYPE_C[r.type]}>{r.type==="bleibe"?"Bleibe":"Abreise"}</Badge>
+                                </div>
+                                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                  {!isHome&&<span style={{fontSize:9,color:t.textFaint}}>andere Etage</span>}
+                                  <span style={{fontSize:10,color:t.textFaint}}>{roomWeight(r).toFixed(1)} Pkt</span>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     );
                   })}
                 </div>
+
+                {/* Legend */}
                 <div style={{marginTop:20,background:t.bgCard,border:"1px solid "+t.border,borderRadius:12,padding:16,display:"flex",flexWrap:"wrap",gap:24}}>
                   <div>
                     <div style={{fontSize:10,color:t.textMuted,textTransform:"uppercase",letterSpacing:.7,marginBottom:6}}>Zimmergewicht</div>
@@ -312,13 +379,17 @@ export default function App() {
                       {[["35","1.00"],["36-45","0.92"],["46-55","0.82"],["56+","0.70"]].map(([r,f])=><span key={r}>{r}: x{f}</span>)}
                     </div>
                   </div>
+                  <div>
+                    <div style={{fontSize:10,color:t.textMuted,textTransform:"uppercase",letterSpacing:.7,marginBottom:6}}>Etagenbonus</div>
+                    <div style={{fontSize:12,color:t.textSub}}>Stamm-Etage erhaelt +{FLOOR_BONUS} Pkt Prioritaet bei gleicher Last</div>
+                  </div>
                 </div>
               </>
             )}
           </div>
         )}
 
-        {/* TAGESPLAN */}
+        {/* ══ TAGESPLAN ═════════════════════════════════════════════════════ */}
         {tab==="tagesplan"&&(
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
@@ -331,9 +402,12 @@ export default function App() {
             {FLOORS.map(floor=>{
               const floorRooms=roomDB.filter(r=>r.floor===floor).sort((a,b)=>a.number.localeCompare(b.number));
               if (!floorRooms.length) return null;
+              // Which staff has this as preferred floor?
+              const assignedStaff = activeStaff.filter(s=>s.preferredFloor===floor);
               return (
                 <Card key={floor} t={t}>
-                  <CardHead label={floor+". Etage"} color={FLOOR_C[floor-1]} t={t} sub={today.filter(r=>r.floor===floor).length+" / "+floorRooms.length+" ausgewaehlt"}/>
+                  <CardHead label={floor+". Etage"} color={FLOOR_C[floor-1]} t={t}
+                    sub={(today.filter(r=>r.floor===floor).length)+" / "+floorRooms.length+" ausgewaehlt"+(assignedStaff.length>0?" - Stamm: "+assignedStaff.map(s=>s.name).join(", "):"")}/>
                   <div style={{padding:14,display:"flex",flexWrap:"wrap",gap:8}}>
                     {floorRooms.map(r=>{
                       const te=today.find(t2=>t2.id===r.id), active=!!te;
@@ -364,7 +438,7 @@ export default function App() {
           </div>
         )}
 
-        {/* PERSONAL */}
+        {/* ══ PERSONAL ══════════════════════════════════════════════════════ */}
         {tab==="personal"&&(
           <div>
             <Card t={t}>
@@ -373,12 +447,16 @@ export default function App() {
                 {staff.length===0&&<span style={{color:t.textFaint,fontSize:12}}>Noch kein Personal.</span>}
                 {staff.map(s=>{
                   const on=!!present[s.id];
+                  const fc=FLOOR_C[s.preferredFloor-1];
                   return (
                     <button key={s.id} onClick={()=>togglePresent(s.id)} style={{display:"flex",alignItems:"center",gap:10,background:on?"#3a9e6a14":t.presentOff,border:"1px solid "+(on?"#3a9e6a55":t.border2),borderRadius:10,padding:"10px 14px",cursor:"pointer",transition:"all .2s",fontFamily:"inherit"}}>
                       <div style={{width:34,height:34,borderRadius:"50%",flexShrink:0,background:on?"#3a9e6a28":t.avatarOff,border:"2px solid "+(on?"#3a9e6a":t.border),display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:on?"#3a9e6a":t.textMuted}}>{s.name[0]}</div>
                       <div style={{textAlign:"left"}}>
                         <div style={{fontWeight:700,fontSize:13,color:on?t.text:t.textMuted}}>{s.name}</div>
-                        <div style={{fontSize:10,color:on?t.textSub:t.textFaint,marginTop:1}}>{s.hours}h - {s.age} J.</div>
+                        <div style={{fontSize:10,color:on?t.textSub:t.textFaint,marginTop:1,display:"flex",alignItems:"center",gap:5}}>
+                          {s.hours}h - {s.age} J.
+                          <span style={{background:fc+"22",color:fc,border:"1px solid "+fc+"44",borderRadius:3,padding:"0 4px",fontSize:9,fontWeight:700}}>E{s.preferredFloor}</span>
+                        </div>
                       </div>
                       <div style={{width:18,height:18,borderRadius:5,flexShrink:0,background:on?"#3a9e6a":"transparent",border:"2px solid "+(on?"#3a9e6a":t.border),display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:11,fontWeight:900}}>{on?"v":""}</div>
                     </button>
@@ -386,15 +464,21 @@ export default function App() {
                 })}
               </div>
             </Card>
+
             <Card t={t}>
               <CardHead label="Neuen Mitarbeiter anlegen" color={t.accent} t={t}/>
-              <div style={{padding:"14px 18px",display:"grid",gridTemplateColumns:"2fr 1fr 1fr auto",gap:12,alignItems:"flex-end"}}>
+              <div style={{padding:"14px 18px",display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr auto",gap:12,alignItems:"flex-end"}}>
                 <Field label="Name" t={t}><TI value={nStaff.name} onChange={v=>setNStaff(p=>({...p,name:v}))} placeholder="Vorname Nachname" t={t}/></Field>
                 <Field label="Alter" t={t}><TI type="number" min={16} max={70} value={nStaff.age} onChange={v=>setNStaff(p=>({...p,age:v}))} t={t}/></Field>
                 <Field label="Stunden/Tag" t={t}><TI type="number" min={1} max={12} value={nStaff.hours} onChange={v=>setNStaff(p=>({...p,hours:v}))} t={t}/></Field>
+                <Field label="Stamm-Etage" t={t}>
+                  <Sel value={nStaff.preferredFloor} onChange={v=>setNStaff(p=>({...p,preferredFloor:+v}))} t={t}
+                    options={FLOORS.map(f=>({value:f,label:f+". Etage"}))}/>
+                </Field>
                 <Btn onClick={addStaff} t={t}>+ Anlegen</Btn>
               </div>
             </Card>
+
             <Card t={t}>
               <CardHead label={"Mitarbeiterliste ("+staff.length+")"} color={TYPE_C.bleibe} t={t}/>
               <div style={{padding:16,display:"flex",flexDirection:"column",gap:8}}>
@@ -405,16 +489,19 @@ export default function App() {
                     : (
                       <div key={s.id} style={{background:t.bgInner,border:"1px solid "+t.border2,borderRadius:10,padding:"11px 15px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
                         <div style={{display:"flex",gap:11,alignItems:"center"}}>
-                          <div style={{width:36,height:36,borderRadius:"50%",flexShrink:0,background:present[s.id]?"#3a9e6a20":t.avatarOff,border:"1px solid "+(present[s.id]?"#3a9e6a55":t.border),display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:present[s.id]?"#3a9e6a":t.textMuted}}>{s.name[0]}</div>
+                          <div style={{width:36,height:36,borderRadius:"50%",flexShrink:0,background:FLOOR_C[s.preferredFloor-1]+"22",border:"1px solid "+FLOOR_C[s.preferredFloor-1]+"55",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:FLOOR_C[s.preferredFloor-1]}}>{s.name[0]}</div>
                           <div>
                             <div style={{fontWeight:700,color:t.text,fontSize:14}}>{s.name}</div>
-                            <div style={{fontSize:11,color:t.textSub,marginTop:2}}>
-                              {s.age} Jahre - {s.hours}h/Tag - Faktor <span style={{color:t.accent}}>x{AGE_FACTOR(s.age).toFixed(2)}</span> - Kapazitaet <span style={{color:TYPE_C.bleibe}}>{staffCap(s).toFixed(1)} Pkt</span>
+                            <div style={{fontSize:11,color:t.textSub,marginTop:2,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                              {s.age} J. - {s.hours}h - x{AGE_FACTOR(s.age).toFixed(2)} - {staffCap(s).toFixed(1)} Pkt
+                              <span style={{background:FLOOR_C[s.preferredFloor-1]+"22",color:FLOOR_C[s.preferredFloor-1],border:"1px solid "+FLOOR_C[s.preferredFloor-1]+"44",borderRadius:4,padding:"0 6px",fontSize:10,fontWeight:700}}>
+                                Stamm-Etage {s.preferredFloor}
+                              </span>
+                              <Badge color={present[s.id]?"#3a9e6a":t.textFaint}>{present[s.id]?"Anwesend":"Abwesend"}</Badge>
                             </div>
                           </div>
                         </div>
-                        <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
-                          <Badge color={present[s.id]?"#3a9e6a":t.textFaint}>{present[s.id]?"Anwesend":"Abwesend"}</Badge>
+                        <div style={{display:"flex",gap:7,alignItems:"center"}}>
                           <Btn v="blue" sm t={t} onClick={()=>setEditId(s.id)}>Bearbeiten</Btn>
                           <Btn v="red"  sm t={t} onClick={()=>removeStaff(s.id)}>Entfernen</Btn>
                         </div>
@@ -426,7 +513,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ZIMMERDATENBANK */}
+        {/* ══ ZIMMERDATENBANK ═══════════════════════════════════════════════ */}
         {tab==="db"&&(
           <div>
             <Card t={t}>
@@ -440,9 +527,11 @@ export default function App() {
             </Card>
             {FLOORS.map(floor=>{
               const fRooms=roomDB.filter(r=>r.floor===floor).sort((a,b)=>a.number.localeCompare(b.number));
+              const stamm=staff.filter(s=>s.preferredFloor===floor);
               return (
                 <Card key={floor} t={t}>
-                  <CardHead label={floor+". Etage"} color={FLOOR_C[floor-1]} t={t} sub={fRooms.length+" Zimmer"}/>
+                  <CardHead label={floor+". Etage"} color={FLOOR_C[floor-1]} t={t}
+                    sub={fRooms.length+" Zimmer"+(stamm.length>0?" - Stamm: "+stamm.map(s=>s.name).join(", "):"")}/>
                   <div style={{padding:14,display:"flex",flexWrap:"wrap",gap:8}}>
                     {fRooms.length===0&&<span style={{color:t.textFaint,fontSize:12}}>Keine Zimmer.</span>}
                     {fRooms.map(r=>(
